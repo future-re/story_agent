@@ -1,0 +1,156 @@
+Metadata-Version: 2.4
+Name: story-agent
+Version: 0.1.0
+Summary: AI 驱动的小说创作助手
+Author: Author
+License: MIT
+Keywords: ai,novel,writing,agent
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: openai>=1.0.0
+Requires-Dist: python-dotenv>=1.0.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0.0; extra == "dev"
+
+# Story Agent 📚
+
+AI 驱动的小说创作助手，帮助你从点子到完整小说。
+
+## 功能特点
+
+- 🎯 **大纲生成** - 从点子生成完整大纲，或从已有章节续写
+- 🎭 **角色系统** - 创建有记忆和人格的角色 Agent
+- ✍️ **章节创作** - AI 辅助生成章节正文
+- 💾 **本地存储** - 自动保存为 txt 文件
+- 🔄 **多模式支持** - 从零开始 / 从章节反推 / 从大纲扩展
+
+## 快速开始
+
+### 安装
+
+```bash
+# 克隆项目
+git clone <repo_url>
+cd story_agent
+
+# 创建虚拟环境
+python -m venv .venv
+source .venv/bin/activate  # Linux/Mac
+# .venv\Scripts\activate  # Windows
+
+# 安装（开发模式）
+pip install -e .
+
+# 配置 API Key
+cp .env.example .env
+# 编辑 .env 填入你的 DEEPSEEK_API_KEY
+```
+
+### 使用方式
+
+#### 交互模式（推荐新手）
+
+```bash
+story-agent
+```
+
+#### 命令行模式
+
+```bash
+# 创建新项目并生成大纲
+story-agent new "代码修仙" --idea "程序员穿越修仙界用代码画符"
+
+# 查看项目状态
+story-agent status "代码修仙"
+
+# 写章节
+story-agent write "代码修仙" 1 "初入青云" --context "主角穿越到青云宗"
+
+# 导入已有章节
+story-agent import "代码修仙" --dir /path/to/chapters/
+
+# 从已有章节生成后续大纲
+story-agent outline "代码修仙" continue --count 10
+
+# 扩展大纲
+story-agent outline "代码修仙" expand --request "细化第一卷"
+
+# 导出完整小说
+story-agent export "代码修仙"
+```
+
+#### Python API
+
+```python
+from main import StoryAgent
+
+agent = StoryAgent("我的小说")
+
+# 生成大纲
+agent.create_outline("你的创意点子")
+
+# 添加角色
+agent.add_character("林夜", role="protagonist", 
+                    personality="沉稳理性", desire="寻找回家的路")
+
+# 写章节
+agent.write_chapter(1, "初入青云", "主角穿越到青云宗")
+
+# 导出
+agent.export()
+```
+
+## 项目结构
+
+```
+src/
+├── agents/       # 智能体（角色、叙述者、规划器）
+├── simulation/   # 仿真（世界状态、事件、记忆）
+├── generation/   # 生成（大纲、章节、Prompt）
+├── models/       # AI 模型适配
+├── storage/      # 本地存储
+├── schema/       # 数据模型
+├── main.py       # 统一入口
+├── cli.py        # 命令行工具
+└── config.py     # 配置
+```
+
+## 输出目录
+
+生成的内容存储在 `output/` 目录：
+
+```
+output/
+└── 项目名/
+    ├── 大纲.txt
+    ├── chapters/
+    │   ├── 001_第一章标题.txt
+    │   └── ...
+    └── characters/
+        └── 角色名.txt
+```
+
+## 命令参考
+
+| 命令 | 说明 |
+|------|------|
+| `python src/cli.py` | 交互模式 |
+| `new <名称> [--idea]` | 创建项目 |
+| `outline <项目> create --idea` | 从点子生成大纲 |
+| `outline <项目> continue` | 从章节续写大纲 |
+| `outline <项目> expand --request` | 扩展大纲 |
+| `write <项目> <章节号> <标题>` | 写章节 |
+| `import <项目> --dir/--file` | 导入已有章节 |
+| `status <项目>` | 查看状态 |
+| `export <项目>` | 导出小说 |
+
+## License
+
+MIT

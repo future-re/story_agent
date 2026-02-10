@@ -1,0 +1,10 @@
+# Python
+.venv
+__pycache__/
+*.pyc
+
+.env
+
+# 生成的小说内容
+output/
+**/__pycache__/
