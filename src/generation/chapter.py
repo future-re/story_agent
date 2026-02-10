@@ -12,6 +12,7 @@ from typing import Any, Dict, Generator, Tuple
 
 from config import config
 from storage import StorageManager
+from tools import resolve_thinking_mode
 from utils.word_count import count_chinese_words
 
 
@@ -205,6 +206,35 @@ class ChapterGenerator:
             if "章" in line and ":" in line:
                 return line.split(":", 1)[-1].strip() or f"第{chapter_num}章"
         return f"第{chapter_num}章"
+
+    def _run_thinking(
+        self,
+        chapter_num: int,
+        outline_info: Dict[str, str],
+        world_context: str,
+        previous_content: str,
+        is_append: bool,
+    ) -> Generator[Any, None, None]:
+        """Run plot thinking with auto mode selection and stream outputs."""
+        if not self.thinking_engine:
+            return
+
+        thinking_mode, reason = resolve_thinking_mode(
+            config.thinking_mode,
+            is_append=is_append,
+            chapter_num=chapter_num,
+            previous_content=previous_content,
+        )
+        yield f"⚙️ 思考模式: {thinking_mode}（{reason}）\n"
+        for output in self.thinking_engine.analyze_chapter(
+            chapter_num=chapter_num,
+            outline_info=outline_info,
+            world_context=world_context,
+            previous_content=previous_content,
+            is_append=is_append,
+            thinking_mode=thinking_mode,
+        ):
+            yield output
 
     def _build_generation_prompt(
         self,
@@ -405,7 +435,7 @@ class ChapterGenerator:
         thinking_plan = None
         thinking_context = ""
         if self.thinking_engine:
-            for output in self.thinking_engine.analyze_chapter(
+            for output in self._run_thinking(
                 chapter_num=ch_num,
                 outline_info=outline_info,
                 world_context=world_context,
@@ -461,7 +491,7 @@ class ChapterGenerator:
 
         thinking_plan = None
         if self.thinking_engine:
-            for output in self.thinking_engine.analyze_chapter(
+            for output in self._run_thinking(
                 chapter_num=ch_num,
                 outline_info=outline_info,
                 world_context=world_context,

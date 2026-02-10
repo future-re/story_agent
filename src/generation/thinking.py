@@ -1,9 +1,17 @@
 """
 剧情思考引擎 - 使用推理模型分析剧情后再生成内容
 """
+from collections import OrderedDict
+import copy
 from typing import Dict, Any, Optional, Generator
 import json
-from json_repair import repair_json
+try:
+    from json_repair import repair_json
+except ImportError:
+    repair_json = None
+
+from config import config
+from tools import build_thinking_cache_key, clip_tail, normalize_thinking_mode
 
 
 class PlotThinkingEngine:
@@ -14,7 +22,7 @@ class PlotThinkingEngine:
     输出结构化的章节规划供生成模型使用。
     """
     
-    def __init__(self, ai_client=None, debug: bool = False):
+    def __init__(self, ai_client=None, debug: bool = False, cache_size: Optional[int] = None):
         """
         初始化思考引擎
         
@@ -25,10 +33,27 @@ class PlotThinkingEngine:
             ai_client = get_thinking_client()
         self.ai = ai_client
         self.debug = debug
+        self.cache_size = max(1, cache_size or config.thinking_cache_size)
+        self.previous_context_chars = max(500, config.thinking_previous_context_chars)
+        self.world_context_chars = max(500, config.thinking_world_context_chars)
+        self._plan_cache: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 
     def _debug(self, message: str):
         if self.debug:
             print(f"[DEBUG] {message}")
+
+    def _get_cached_plan(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        cached = self._plan_cache.get(cache_key)
+        if cached is None:
+            return None
+        self._plan_cache.move_to_end(cache_key)
+        return copy.deepcopy(cached)
+
+    def _save_cached_plan(self, cache_key: str, plan: Dict[str, Any]):
+        self._plan_cache[cache_key] = copy.deepcopy(plan)
+        self._plan_cache.move_to_end(cache_key)
+        while len(self._plan_cache) > self.cache_size:
+            self._plan_cache.popitem(last=False)
     
     def analyze_chapter(
         self, 
@@ -36,7 +61,8 @@ class PlotThinkingEngine:
         outline_info: Dict[str, str],
         world_context: str,
         previous_content: str,
-        is_append: bool = False
+        is_append: bool = False,
+        thinking_mode: str = "auto",
     ) -> Generator[str, None, Dict[str, Any]]:
         """
         分析并规划本章内容
@@ -50,7 +76,185 @@ class PlotThinkingEngine:
         :yields: 思考过程的流式输出
         :returns: 结构化的章节规划
         """
-        prompt = f"""你是一位资深网文编剧，请为第{chapter_num}章创建详细的【分镜剧本】。
+        resolved_mode = normalize_thinking_mode(thinking_mode)
+        if resolved_mode == "auto":
+            resolved_mode = "fast" if is_append else "deep"
+        clipped_world_context = clip_tail(world_context, self.world_context_chars)
+        clipped_previous_content = clip_tail(previous_content, self.previous_context_chars)
+
+        cache_key = build_thinking_cache_key(
+            chapter_num=chapter_num,
+            thinking_mode=resolved_mode,
+            outline_info=outline_info,
+            world_context=clipped_world_context,
+            previous_content=clipped_previous_content,
+        )
+        cached_plan = self._get_cached_plan(cache_key)
+        if cached_plan is not None:
+            yield f"⚡ 使用缓存剧情规划（{resolved_mode}）\n"
+            yield self._format_summary(cached_plan)
+            yield "\n"
+            yield cached_plan
+            return
+
+        prompt = self._build_prompt(
+            chapter_num=chapter_num,
+            outline_info=outline_info,
+            world_context=clipped_world_context,
+            previous_content=clipped_previous_content,
+            thinking_mode=resolved_mode,
+        )
+        system = self._build_system_prompt(resolved_mode)
+
+        yield f"🧠 正在分析剧情（{resolved_mode}）...\n"
+        
+        response_text = ""
+        try:
+            for chunk in self.ai.stream_chat(prompt, system_prompt=system):
+                response_text += chunk
+                # 可选：显示思考过程
+                # yield chunk
+        except Exception as e:
+            yield f"❌ API 调用失败: {str(e)}\n"
+            fallback = self._get_default_plan(chapter_num, outline_info)
+            fallback.setdefault("_meta", {})["thinking_mode"] = resolved_mode
+            yield fallback
+            return
+        
+        # 调试：输出原始响应（前500字符）
+        # yield f"\n[DEBUG] 响应长度: {len(response_text)} 字符\n"
+        # yield f"[DEBUG] 响应前500字: {response_text[:500]}\n\n"
+        
+        # 解析 JSON 结果
+        result = self._parse_result(response_text)
+        
+        if result:
+            result.setdefault("_meta", {})["thinking_mode"] = resolved_mode
+            self._save_cached_plan(cache_key, result)
+            yield self._format_summary(result)
+            yield "\n"
+            yield result
+        else:
+            yield "⚠️ 思考结果解析失败\n"
+            # 输出调试信息
+            yield f"📝 响应长度: {len(response_text)} 字符\n"
+            if len(response_text) > 0:
+                yield f"📝 响应开头: {response_text[:200]}...\n"
+            else:
+                yield "📝 响应为空\n"
+            yield "使用默认模式\n"
+            fallback = self._get_default_plan(chapter_num, outline_info)
+            fallback.setdefault("_meta", {})["thinking_mode"] = resolved_mode
+            yield fallback
+
+    def _build_system_prompt(self, thinking_mode: str) -> str:
+        if thinking_mode == "fast":
+            return """你是一位资深网文编辑，请快速给出可执行剧情规划。
+要求：优先连贯性和人物关系逻辑，只输出有效 JSON，不要解释。"""
+        return """你是一位资深影视编剧。你的特长是处理剧情连贯性和人物关系逻辑。
+请创建详细分镜剧本，并确保输出为有效 JSON。"""
+
+    def _build_prompt(
+        self,
+        chapter_num: int,
+        outline_info: Dict[str, str],
+        world_context: str,
+        previous_content: str,
+        thinking_mode: str,
+    ) -> str:
+        if thinking_mode == "fast":
+            return self._build_fast_prompt(chapter_num, outline_info, world_context, previous_content)
+        return self._build_deep_prompt(chapter_num, outline_info, world_context, previous_content)
+
+    def _build_fast_prompt(
+        self,
+        chapter_num: int,
+        outline_info: Dict[str, str],
+        world_context: str,
+        previous_content: str,
+    ) -> str:
+        return f"""你是一位资深网文编剧，请为第{chapter_num}章做“快速剧情规划”。
+
+目标：在最少 token 内给出可直接写作的结构化计划，重点保证连续性和人物逻辑。
+
+【世界与角色状态】
+{world_context}
+
+【大纲指引】
+- 本卷目标：{outline_info.get('volume', '未知')}
+- 当前阶段：{outline_info.get('phase', '未知')}
+- 本章具体情节：{outline_info.get('specific_goal', '未指定')}
+
+【前文结尾（必须衔接）】
+{previous_content if previous_content else '（故事开始）'}
+
+请输出 JSON：
+```json
+{{
+  "plot_analysis": {{
+    "pre_chapter_context": {{
+      "previous_ending": "前文结尾",
+      "immediate_consequences": "本章开头必须处理",
+      "character_emotional_carryover": "情绪延续"
+    }},
+    "interaction_logic_check": [
+      {{
+        "characters": ["角色A", "角色B"],
+        "relation_status": "初识/熟识/敌对/未知",
+        "interaction_guidance": "交互建议"
+      }}
+    ],
+    "current_situation": "局势"
+  }},
+  "chapter_blueprint": {{
+    "title_suggestion": "标题",
+    "theme": "核心主题",
+    "opening_hook": "开篇钩子",
+    "storyboard": [
+      {{
+        "shot_number": 1,
+        "location": "场景",
+        "action_beats": [
+          {{"beat": 1, "actor": "角色", "action": "动作", "reaction": "反应"}}
+        ],
+        "dialogue_script": [
+          {{"speaker": "说话人", "line": "台词", "tone": "语气"}}
+        ],
+        "purpose": "叙事目的",
+        "word_count": 400
+      }}
+    ],
+    "key_moments": [
+      {{"moment_type": "高光", "description": "关键场面", "impact": "作用"}}
+    ],
+    "cliffhanger": {{
+      "type": "钩子类型",
+      "final_line": "最后一句",
+      "reader_hook": "读者疑问"
+    }},
+    "writing_guidance": {{
+      "tone": "基调",
+      "pacing": "节奏",
+      "highlight": ["要写重点"],
+      "avoid": ["避免事项"]
+    }}
+  }}
+}}
+```
+
+约束：
+1. `storyboard` 保持 3-5 个镜头，强调可执行性。
+2. 严格遵守“初识角色不能熟络对话”。
+3. 只输出 JSON。"""
+
+    def _build_deep_prompt(
+        self,
+        chapter_num: int,
+        outline_info: Dict[str, str],
+        world_context: str,
+        previous_content: str,
+    ) -> str:
+        return f"""你是一位资深网文编剧，请为第{chapter_num}章创建详细的【分镜剧本】。
 
 ⚠️ **核心要求**：
 1. **必须紧接上文**：仔细分析前文结尾，新章节第一幕必须直接承接上文的最后一幕，或者处理其直接后果。严禁跳跃或忽略前文结尾的悬念。
@@ -70,7 +274,7 @@ class PlotThinkingEngine:
 - 本章具体情节：{outline_info.get('specific_goal', '未指定')}
 
 【前文内容（重点关注结尾及主角人际关系）】
-{previous_content[-3000:] if previous_content else '（故事开始）'}
+{previous_content if previous_content else '（故事开始）'}
 
 ---
 
@@ -97,7 +301,7 @@ class PlotThinkingEngine:
   "chapter_blueprint": {{
     "title_suggestion": "章节标题",
     "theme": "核心主题",
-    "opening_hook": "开篇必须直接响应'前文结尾'",
+    "opening_hook": "开篇必须直接响应前文结尾",
     "total_word_target": 3500,
     "storyboard": [
       {{
@@ -193,54 +397,11 @@ class PlotThinkingEngine:
 ```
 
 ⚠️ 重要：
-1. **逻辑自洽**：重点检查人物关系，不要出现"主角这章才第一次见反派，却像老朋友一样聊天"的情况。
-2. **连贯性**：开头无缝衔接。
-3. **细节决定成败**：通过微表情和潜台词体现人物关系。
+1. 逻辑自洽：重点检查人物关系，不要出现主角初见反派却像老朋友聊天。
+2. 连贯性：开头无缝衔接。
+3. 细节决定成败：通过微表情和潜台词体现人物关系。
 
 请输出 JSON："""
-
-        system = """你是一位资深影视编剧。你的特长是处理**剧情连贯性**和**人物关系逻辑**。
-请创建【分镜剧本】，确保：
-1. 新章节与前文无缝衔接。
-2. 人物交互符合"初识"或"熟识"的逻辑设定。
-3. 严格遵守"主角视角的信息差"。
-
-输出必须是有效的 JSON 格式。"""
-
-        yield "🧠 正在分析剧情...\n"
-        
-        response_text = ""
-        try:
-            for chunk in self.ai.stream_chat(prompt, system_prompt=system):
-                response_text += chunk
-                # 可选：显示思考过程
-                # yield chunk
-        except Exception as e:
-            yield f"❌ API 调用失败: {str(e)}\n"
-            yield self._get_default_plan(chapter_num, outline_info)
-            return
-        
-        # 调试：输出原始响应（前500字符）
-        # yield f"\n[DEBUG] 响应长度: {len(response_text)} 字符\n"
-        # yield f"[DEBUG] 响应前500字: {response_text[:500]}\n\n"
-        
-        # 解析 JSON 结果
-        result = self._parse_result(response_text)
-        
-        if result:
-            yield self._format_summary(result)
-            yield "\n"
-            yield result
-        else:
-            yield "⚠️ 思考结果解析失败\n"
-            # 输出调试信息
-            yield f"📝 响应长度: {len(response_text)} 字符\n"
-            if len(response_text) > 0:
-                yield f"📝 响应开头: {response_text[:200]}...\n"
-            else:
-                yield "📝 响应为空\n"
-            yield "使用默认模式\n"
-            yield self._get_default_plan(chapter_num, outline_info)
     
     def _parse_result(self, response: str) -> Optional[Dict[str, Any]]:
         """解析模型输出的 JSON，支持自动修复损坏的 JSON"""
@@ -273,6 +434,9 @@ class PlotThinkingEngine:
                 except json.JSONDecodeError:
                     # 4. 标准解析失败，使用 json_repair 修复
                     self._debug("标准 JSON 解析失败，尝试自动修复...")
+                    if repair_json is None:
+                        self._debug("json_repair 不可用，跳过修复")
+                        return None
                     repaired = repair_json(json_str, return_objects=True)
                     if isinstance(repaired, dict):
                         self._debug("JSON 修复成功")
@@ -288,6 +452,9 @@ class PlotThinkingEngine:
     def _format_summary(self, plan: Dict[str, Any]) -> str:
         """格式化思考结果摘要"""
         lines = ["📋 分镜剧本生成完成："]
+        thinking_mode = plan.get("_meta", {}).get("thinking_mode")
+        if thinking_mode:
+            lines.append(f"   模式: {thinking_mode}")
         
         blueprint = plan.get('chapter_blueprint', plan.get('chapter_plan', {}))
         
@@ -351,6 +518,8 @@ class PlotThinkingEngine:
         """
         if not plan:
             return ""
+        if plan.get("_meta", {}).get("thinking_mode") == "fast":
+            return self._format_fast_generation(plan)
         
         lines = ["【分镜剧本 - 严格按此执行写作】"]
         
@@ -563,6 +732,78 @@ class PlotThinkingEngine:
             if guidance.get('avoid'):
                 lines.append(f"  ⚠️避免：{', '.join(guidance['avoid'])}")
         
+        return "\n".join(lines)
+
+    def _format_fast_generation(self, plan: Dict[str, Any]) -> str:
+        """Fast thinking mode uses a compact prompt block to reduce token pressure."""
+        lines = ["【快速剧情规划 - 严格执行】"]
+
+        analysis = plan.get("plot_analysis", {})
+        pre = analysis.get("pre_chapter_context", {})
+        if pre:
+            lines.append(f"前文结尾：{pre.get('previous_ending', '')}")
+            lines.append(f"开篇必须处理：{pre.get('immediate_consequences', '')}")
+            if pre.get("character_emotional_carryover"):
+                lines.append(f"情绪延续：{pre['character_emotional_carryover']}")
+
+        interactions = analysis.get("interaction_logic_check", [])
+        if interactions:
+            lines.append("人物交互逻辑：")
+            for inter in interactions[:3]:
+                chars = " & ".join(inter.get("characters", []))
+                status = inter.get("relation_status", "?")
+                guidance = inter.get("interaction_guidance", "")
+                lines.append(f"- {chars}({status}): {guidance}")
+
+        blueprint = plan.get("chapter_blueprint", plan.get("chapter_plan", {}))
+        if blueprint.get("title_suggestion"):
+            lines.append(f"标题建议：{blueprint['title_suggestion']}")
+        if blueprint.get("theme"):
+            lines.append(f"主题：{blueprint['theme']}")
+        if blueprint.get("opening_hook"):
+            lines.append(f"开篇钩子：{blueprint['opening_hook']}")
+
+        storyboard = blueprint.get("storyboard", blueprint.get("scenes", []))
+        if storyboard:
+            lines.append("镜头安排：")
+            for shot in storyboard[:5]:
+                num = shot.get("shot_number", shot.get("scene_number", "?"))
+                loc = shot.get("location", "未知场景")
+                purpose = shot.get("purpose", "")
+                lines.append(f"- 镜头{num} @ {loc}: {purpose}")
+                for beat in shot.get("action_beats", [])[:2]:
+                    if isinstance(beat, dict):
+                        lines.append(
+                            f"  动作[{beat.get('beat', '?')}] {beat.get('actor', '?')}: {beat.get('action', '')}"
+                        )
+                for dial in shot.get("dialogue_script", [])[:2]:
+                    if isinstance(dial, dict):
+                        lines.append(
+                            f"  对话 {dial.get('speaker', '?')}({dial.get('tone', '')}): {dial.get('line', '')}"
+                        )
+
+        moments = blueprint.get("key_moments", [])
+        if moments:
+            lines.append("关键时刻：")
+            for moment in moments[:3]:
+                if isinstance(moment, dict):
+                    lines.append(f"- {moment.get('description', '')}")
+
+        cliff = blueprint.get("cliffhanger", {})
+        if isinstance(cliff, dict) and cliff.get("reader_hook"):
+            lines.append(f"章末悬念：{cliff['reader_hook']}")
+
+        guidance = plan.get("writing_guidance", blueprint.get("writing_guidance", plan.get("writing_notes", {})))
+        if guidance:
+            tone = guidance.get("tone", "")
+            pacing = guidance.get("pacing", "")
+            if tone or pacing:
+                lines.append(f"写作基调：{tone} | 节奏：{pacing}")
+            if guidance.get("highlight"):
+                lines.append(f"重点：{', '.join(guidance['highlight'])}")
+            if guidance.get("avoid"):
+                lines.append(f"避免：{', '.join(guidance['avoid'])}")
+
         return "\n".join(lines)
     
     def format_full_plan_display(self, plan: Dict[str, Any]) -> str:

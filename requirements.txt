@@ -3,6 +3,7 @@ python-dotenv>=1.0.0
 prompt_toolkit>=3.0.0
 pydantic>=2.6.0
 loguru>=0.7.2
+json-repair>=0.30.0
 
 # --- LLM 接口 ---
 openai>=1.12.0

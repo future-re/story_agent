@@ -7,6 +7,7 @@ AI 驱动的小说创作助手，帮助你从点子到完整小说。
 - 🎯 **大纲生成** - 从点子生成完整大纲，或从已有章节续写
 - 🎭 **角色系统** - 创建有记忆和人格的角色 Agent
 - ✍️ **章节创作** - AI 辅助生成章节正文
+- 🧠 **双速思考** - `auto/fast/deep` 思考模式，支持缓存复用
 - 💾 **本地存储** - 自动保存为 txt 文件
 - 🔄 **多模式支持** - 从零开始 / 从章节反推 / 从大纲扩展
 
@@ -93,6 +94,7 @@ src/
 ├── agents/       # 智能体（角色、叙述者、规划器）
 ├── simulation/   # 仿真（世界状态、事件、记忆）
 ├── generation/   # 生成（大纲、章节、Prompt）
+├── tools/        # 可复用流程工具（思考模式、缓存键、上下文裁剪）
 ├── models/       # AI 模型适配
 ├── storage/      # 本地存储
 ├── schema/       # 数据模型
@@ -129,6 +131,22 @@ output/
 | `import <项目> --dir/--file` | 导入已有章节 |
 | `status <项目>` | 查看状态 |
 | `export <项目>` | 导出小说 |
+
+## Thinking 配置
+
+可通过环境变量调优思考速度与质量平衡：
+
+```bash
+# 思考模式：auto / fast / deep
+STORY_THINKING_MODE=auto
+
+# 思考缓存大小（LRU）
+STORY_THINKING_CACHE_SIZE=20
+
+# 思考上下文截断长度
+STORY_THINKING_PREVIOUS_CONTEXT_CHARS=3000
+STORY_THINKING_WORLD_CONTEXT_CHARS=2500
+```
 
 ## License
 
