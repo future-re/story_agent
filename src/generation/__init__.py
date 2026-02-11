@@ -7,11 +7,20 @@ from .prompts import PROMPT_FROM_IDEA, PROMPT_FROM_CHAPTERS, PROMPT_FROM_OUTLINE
 from .outline import OutlineGenerator, OutlineMode
 from .chapter import ChapterGenerator
 from .thinking import PlotThinkingEngine
+from .services import (
+    ChapterPreparationService,
+    ChapterWritingService,
+    StoryPipelineService,
+    WorldStateUpdateService,
+)
 
 __all__ = [
     "PROMPT_FROM_IDEA", "PROMPT_FROM_CHAPTERS", "PROMPT_FROM_OUTLINE",
     "OutlineGenerator", "OutlineMode",
     "ChapterGenerator",
     "PlotThinkingEngine",
+    "ChapterPreparationService",
+    "ChapterWritingService",
+    "WorldStateUpdateService",
+    "StoryPipelineService",
 ]
-

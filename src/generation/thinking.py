@@ -3,7 +3,7 @@
 """
 from collections import OrderedDict
 import copy
-from typing import Dict, Any, Optional, Generator
+from typing import Dict, Any, Optional, Generator, List
 import json
 try:
     from json_repair import repair_json
@@ -36,6 +36,9 @@ class PlotThinkingEngine:
         self.cache_size = max(1, cache_size or config.thinking_cache_size)
         self.previous_context_chars = max(500, config.thinking_previous_context_chars)
         self.world_context_chars = max(500, config.thinking_world_context_chars)
+        self.quality_retry_count = max(0, config.thinking_quality_retry)
+        self.deep_min_storyboard_shots = max(2, config.thinking_deep_min_storyboard_shots)
+        self.fast_min_storyboard_shots = max(1, config.thinking_fast_min_storyboard_shots)
         self._plan_cache: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 
     def _debug(self, message: str):
@@ -54,6 +57,102 @@ class PlotThinkingEngine:
         self._plan_cache.move_to_end(cache_key)
         while len(self._plan_cache) > self.cache_size:
             self._plan_cache.popitem(last=False)
+
+    def _stream_collect_response(self, prompt: str, system_prompt: str) -> str:
+        """Collect full response text from stream API."""
+        response_text = ""
+        for chunk in self.ai.stream_chat(prompt, system_prompt=system_prompt):
+            response_text += chunk
+        return response_text
+
+    @staticmethod
+    def _extract_blueprint(plan: Dict[str, Any]) -> Dict[str, Any]:
+        return plan.get("chapter_blueprint", plan.get("chapter_plan", {}))
+
+    @staticmethod
+    def _extract_storyboard(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
+        blueprint = plan.get("chapter_blueprint", plan.get("chapter_plan", {}))
+        storyboard = blueprint.get("storyboard", blueprint.get("scenes", []))
+        return storyboard if isinstance(storyboard, list) else []
+
+    @staticmethod
+    def _extract_conflicts(blueprint: Dict[str, Any]) -> List[Dict[str, Any]]:
+        conflicts = blueprint.get("conflict_escalation", blueprint.get("conflicts", []))
+        return conflicts if isinstance(conflicts, list) else []
+
+    def _validate_plan_quality(self, plan: Dict[str, Any], thinking_mode: str) -> List[str]:
+        """Return quality issues; empty means pass."""
+        issues: List[str] = []
+        blueprint = self._extract_blueprint(plan)
+        storyboard = self._extract_storyboard(plan)
+        min_shots = self.fast_min_storyboard_shots if thinking_mode == "fast" else self.deep_min_storyboard_shots
+
+        if len(storyboard) < min_shots:
+            issues.append(f"分镜数量不足：当前{len(storyboard)}，至少{min_shots}")
+
+        weak_shots: List[str] = []
+        for idx, shot in enumerate(storyboard, 1):
+            action_beats = shot.get("action_beats", [])
+            dialogue_script = shot.get("dialogue_script", [])
+            key_actions = shot.get("key_actions", [])
+            if not action_beats and not dialogue_script and not key_actions:
+                weak_shots.append(f"{idx}(无动作/对白)")
+            if not shot.get("purpose"):
+                weak_shots.append(f"{idx}(无叙事目的)")
+        if weak_shots:
+            issues.append("分镜可执行性不足：" + "、".join(weak_shots[:6]))
+
+        plot_analysis = plan.get("plot_analysis", {})
+        pre_context = plot_analysis.get("pre_chapter_context", {})
+        if not pre_context.get("immediate_consequences"):
+            issues.append("缺少前文结尾的立刻后果")
+
+        if thinking_mode == "deep":
+            conflicts = self._extract_conflicts(blueprint)
+            key_moments = blueprint.get("key_moments", [])
+            if not isinstance(key_moments, list):
+                key_moments = []
+            if len(conflicts) < 2:
+                issues.append("deep 模式冲突层级不足（至少2条）")
+            if len(key_moments) < 2:
+                issues.append("deep 模式关键时刻不足（至少2条）")
+
+        return issues
+
+    def _repair_plan_for_quality(
+        self,
+        plan: Dict[str, Any],
+        issues: List[str],
+        chapter_num: int,
+        thinking_mode: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Ask model to fix low-quality plan and return parsed JSON."""
+        min_shots = self.fast_min_storyboard_shots if thinking_mode == "fast" else self.deep_min_storyboard_shots
+        prompt = f"""当前章节规划质量不达标，请按问题清单修复并输出完整 JSON。
+
+【章节】第{chapter_num}章
+【模式】{thinking_mode}
+【问题清单】
+{chr(10).join(f"- {item}" for item in issues)}
+
+【硬性约束】
+1. storyboard 至少 {min_shots} 个镜头，必须编号连续。
+2. 每个镜头必须包含：location、purpose、action_beats 或 dialogue_script。
+3. 开篇必须响应前文 immediate_consequences。
+4. deep 模式下至少 2 条 conflict_escalation 和 2 条 key_moments。
+5. 只输出合法 JSON，不要附加解释。
+
+【当前规划】
+```json
+{json.dumps(plan, ensure_ascii=False, indent=2)}
+```
+"""
+        system = "你是剧情结构修复器。只输出修复后的完整 JSON。"
+        try:
+            response = self._stream_collect_response(prompt, system)
+        except Exception:
+            return None
+        return self._parse_result(response)
     
     def analyze_chapter(
         self, 
@@ -108,12 +207,8 @@ class PlotThinkingEngine:
 
         yield f"🧠 正在分析剧情（{resolved_mode}）...\n"
         
-        response_text = ""
         try:
-            for chunk in self.ai.stream_chat(prompt, system_prompt=system):
-                response_text += chunk
-                # 可选：显示思考过程
-                # yield chunk
+            response_text = self._stream_collect_response(prompt, system)
         except Exception as e:
             yield f"❌ API 调用失败: {str(e)}\n"
             fallback = self._get_default_plan(chapter_num, outline_info)
@@ -129,8 +224,29 @@ class PlotThinkingEngine:
         result = self._parse_result(response_text)
         
         if result:
+            quality_issues = self._validate_plan_quality(result, resolved_mode)
+            for attempt in range(self.quality_retry_count):
+                if not quality_issues:
+                    break
+                yield f"⚠️ 规划质量不足，正在自动强化（{attempt + 1}/{self.quality_retry_count}）...\n"
+                repaired = self._repair_plan_for_quality(
+                    plan=result,
+                    issues=quality_issues,
+                    chapter_num=chapter_num,
+                    thinking_mode=resolved_mode,
+                )
+                if not repaired:
+                    continue
+                result = repaired
+                quality_issues = self._validate_plan_quality(result, resolved_mode)
+
             result.setdefault("_meta", {})["thinking_mode"] = resolved_mode
-            self._save_cached_plan(cache_key, result)
+            if quality_issues:
+                result.setdefault("_meta", {})["quality_warnings"] = quality_issues
+                yield "⚠️ 规划仍有缺口：" + "；".join(quality_issues[:3]) + "\n"
+            else:
+                self._save_cached_plan(cache_key, result)
+
             yield self._format_summary(result)
             yield "\n"
             yield result
@@ -152,7 +268,8 @@ class PlotThinkingEngine:
             return """你是一位资深网文编辑，请快速给出可执行剧情规划。
 要求：优先连贯性和人物关系逻辑，只输出有效 JSON，不要解释。"""
         return """你是一位资深影视编剧。你的特长是处理剧情连贯性和人物关系逻辑。
-请创建详细分镜剧本，并确保输出为有效 JSON。"""
+请创建详细分镜剧本，不得给出空泛总结，必须提供可执行镜头信息。
+确保输出为有效 JSON。"""
 
     def _build_prompt(
         self,
@@ -243,9 +360,10 @@ class PlotThinkingEngine:
 ```
 
 约束：
-1. `storyboard` 保持 3-5 个镜头，强调可执行性。
+1. `storyboard` 至少 {self.fast_min_storyboard_shots} 个镜头，建议 3-5 个，强调可执行性。
 2. 严格遵守“初识角色不能熟络对话”。
-3. 只输出 JSON。"""
+3. 每个镜头都要有 `purpose` 与动作/对白。
+4. 只输出 JSON。"""
 
     def _build_deep_prompt(
         self,
@@ -400,6 +518,12 @@ class PlotThinkingEngine:
 1. 逻辑自洽：重点检查人物关系，不要出现主角初见反派却像老朋友聊天。
 2. 连贯性：开头无缝衔接。
 3. 细节决定成败：通过微表情和潜台词体现人物关系。
+4. **硬性数量要求**：
+   - `storyboard` 至少 {self.deep_min_storyboard_shots} 个镜头（建议 5-7）。
+   - 每个镜头必须给出 `purpose`，并包含动作或对白（不可只有环境描写）。
+   - `conflict_escalation` 至少 2 条。
+   - `key_moments` 至少 2 条。
+5. 输出必须是可解析 JSON，禁止附加解释文本。
 
 请输出 JSON："""
     
@@ -455,6 +579,9 @@ class PlotThinkingEngine:
         thinking_mode = plan.get("_meta", {}).get("thinking_mode")
         if thinking_mode:
             lines.append(f"   模式: {thinking_mode}")
+        quality_warnings = plan.get("_meta", {}).get("quality_warnings", [])
+        if quality_warnings:
+            lines.append(f"   质检: {len(quality_warnings)}个问题")
         
         blueprint = plan.get('chapter_blueprint', plan.get('chapter_plan', {}))
         

@@ -6,6 +6,7 @@ from config import config
 
 from .base import BaseModel
 from .deepseek import DeepSeekModel
+from .glm import GLMModel
 from .kimi import KimiModel
 
 
@@ -23,6 +24,12 @@ def get_client(model_name: Optional[str] = None):
         return DeepSeekModel()
     if "deepseek" in lowered:
         return DeepSeekModel(model_name=resolved_name)
+    if lowered == "glm":
+        return GLMModel()
+    if "glm" in lowered:
+        return GLMModel(model_name=resolved_name)
+    if "zhipu" in lowered or "bigmodel" in lowered:
+        return GLMModel(model_name=resolved_name)
     if "moonshot" in lowered or "kimi" in lowered:
         return KimiModel(model_name=resolved_name)
     raise ValueError(f"不支持的模型: {resolved_name}")
@@ -36,8 +43,8 @@ def get_thinking_client():
 __all__ = [
     "BaseModel",
     "DeepSeekModel",
+    "GLMModel",
     "KimiModel",
     "get_client",
     "get_thinking_client",
 ]
-

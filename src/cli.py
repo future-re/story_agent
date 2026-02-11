@@ -25,10 +25,21 @@ def cmd_new(args):
     print(f"✨ 创建项目: {args.name}")
     
     if args.idea:
-        print("📝 生成大纲中...")
-        outline = agent.create_outline(args.idea)
-        print("\n" + outline[:500] + "...\n")
-        print(f"✅ 大纲已保存到 {args.output}/{args.name}/大纲.txt")
+        if args.pipeline:
+            print("🧱 执行五阶段初始化中（粗纲→细纲→世界→角色）...")
+            result = agent.create_story_pipeline(args.idea, chapter_count=args.chapters)
+            outline_preview = result.get("detailed_outline", {}).get("outline_markdown", "")
+            print("\n" + outline_preview[:500] + "...\n")
+            print(f"✅ 已生成并保存：")
+            print(f"   - {args.output}/{args.name}/story_blueprint.json")
+            print(f"   - {args.output}/{args.name}/detailed_outline.json")
+            print(f"   - {args.output}/{args.name}/大纲.txt")
+            print(f"   - {args.output}/{args.name}/world_state.json")
+        else:
+            print("📝 生成大纲中...")
+            outline = agent.create_outline(args.idea)
+            print("\n" + outline[:500] + "...\n")
+            print(f"✅ 大纲已保存到 {args.output}/{args.name}/大纲.txt")
 
 
 def cmd_outline(args):
@@ -52,6 +63,23 @@ def cmd_outline(args):
     elif args.action == "continue":
         outline = agent.continue_outline(args.count)
         print(outline)
+    
+    elif args.action == "pipeline":
+        if not args.idea:
+            print("❌ 请提供 --idea 参数")
+            return
+        result = agent.create_story_pipeline(args.idea, chapter_count=args.count)
+        outline_preview = result.get("detailed_outline", {}).get("outline_markdown", "")
+        world_char_count = len(result.get("world_state", {}).get("characters", []))
+        print("✅ 五阶段流程完成：")
+        print(f"- 结构化粗纲: {args.output}/{args.project}/story_blueprint.json")
+        print(f"- 结构化细纲: {args.output}/{args.project}/detailed_outline.json")
+        print(f"- 文本大纲: {args.output}/{args.project}/大纲.txt")
+        print(f"- 世界状态: {args.output}/{args.project}/world_state.json")
+        print(f"- 角色数: {world_char_count}")
+        if outline_preview:
+            print("\n细纲预览：\n")
+            print(outline_preview[:1200] + ("..." if len(outline_preview) > 1200 else ""))
 
 
 def cmd_write(args):
@@ -552,74 +580,23 @@ def cmd_interactive(args):
                         print("❌ 当前没有设置风格参考。使用 /style <文件路径> 导入。")
             
             elif cmd == "/init":
-                # 从大纲初始化角色和世界状态
+                # 从结构化大纲初始化角色和世界状态
                 if not project_name:
                     print("❌ 请先创建项目: /new 项目名")
                     continue
-                
-                # 读取大纲
-                outline_path = os.path.join(storage.get_project_dir(project_name), "大纲.txt")
-                if not os.path.exists(outline_path):
-                    print("❌ 请先生成大纲: /outline 或 /save")
-                    continue
-                
-                with open(outline_path, 'r', encoding='utf-8') as f:
-                    outline_content = f.read()
-                
-                # 读取已有章节
-                chapters_content = ""
-                chapters = storage.list_chapters(project_name)
-                for ch_file in chapters[:5]:  # 最多读5章
-                    ch_path = os.path.join(storage.get_project_dir(project_name), "chapters", ch_file)
-                    with open(ch_path, 'r', encoding='utf-8') as f:
-                        chapters_content += f.read()[:2000] + "\n\n"
-                
-                print("\n📊 正在分析大纲和章节，初始化世界模型...")
-                
-                init_prompt = f"""请分析以下小说大纲和章节内容，提取并以JSON格式输出：
 
-1. 角色列表（characters）: 每个角色包含 name, role(主角/反派/配角), personality, desire, background, level(境界), abilities(功法/技能列表), items(法宝/物品列表)
-2. 世界设定（world）: 包含 environment, power_system(简述), factions(势力列表), known_methods(知名功法列表), known_artifacts(知名法宝列表)
-   - cultivation_systems: 修炼体系列表，每个包含：
-     - name: 体系名
-     - description: 体系描述
-     - methods: 常见功法
-     - ranks: 等级列表，每个等级包含 name, level_index(1,2...), description, abilities(典型能力)
-3. 地点列表（locations）: 每个地点包含 name, description
-
-大纲内容：
-{outline_content[:3000]}
-
-章节内容：
-{chapters_content[:3000]}
-
-请输出 JSON 格式："""
-                
-                print("\n🤖: ", end="", flush=True)
-                response_text = ""
-                for chunk in ai.stream_chat(init_prompt):
-                    print(chunk, end="", flush=True)
-                    response_text += chunk
-                print()
-                
-                # 尝试解析并保存
+                gen = OutlineGenerator(ai, storage)
+                print("\n📊 正在根据结构化大纲初始化世界模型...")
                 try:
-                    import json
-                    # 提取 JSON
-                    json_start = response_text.find('{')
-                    json_end = response_text.rfind('}') + 1
-                    if json_start >= 0 and json_end > json_start:
-                        world_data = json.loads(response_text[json_start:json_end])
-                        storage.save_world_state(project_name, world_data)
-                        print("\n✅ 世界模型已初始化并保存")
-                        
-                        # 保存角色档案
-                        if 'characters' in world_data:
-                            for char in world_data['characters']:
-                                storage.save_character_profile(project_name, char.get('name', '未知'), char)
-                            print(f"   创建了 {len(world_data['characters'])} 个角色档案")
+                    world_data = gen.initialize_world_from_saved(project_name, save=True)
+                    char_count = len(world_data.get("characters", []))
+                    print("\n✅ 世界模型已初始化并保存")
+                    print(f"   创建/更新了 {char_count} 个角色档案")
+                except FileNotFoundError as e:
+                    print(f"❌ {e}")
+                    print("💡 请先执行：/outline（并保存）后再用命令行 pipeline 初始化，或直接用 new --pipeline")
                 except Exception as e:
-                    print(f"\n⚠️ JSON解析失败，但AI回复已显示，可手动整理: {e}")
+                    print(f"⚠️ 初始化失败: {e}")
             
             elif cmd == "/chars":
                 # 查看角色列表
@@ -718,6 +695,9 @@ def main():
   # 创建新项目并生成大纲
   python cli.py new "代码修仙" --idea "程序员穿越修仙界用代码画符"
   
+  # 五阶段初始化（粗纲->细纲->世界->角色）
+  python cli.py new "代码修仙" --idea "程序员穿越修仙界用代码画符" --pipeline --chapters 12
+  
   # 写章节
   python cli.py write "代码修仙" 1 "初入青云" --context "主角穿越到青云宗"
   
@@ -736,15 +716,17 @@ def main():
     p_new = subparsers.add_parser("new", help="创建新项目")
     p_new.add_argument("name", help="项目名称")
     p_new.add_argument("--idea", help="创意点子（可选，用于直接生成大纲）")
+    p_new.add_argument("--pipeline", action="store_true", help="启用五阶段初始化流程")
+    p_new.add_argument("--chapters", type=int, default=10, help="细纲目标章节数（配合 --pipeline）")
     p_new.set_defaults(func=cmd_new)
     
     # outline 命令
     p_outline = subparsers.add_parser("outline", help="大纲操作")
     p_outline.add_argument("project", help="项目名称")
-    p_outline.add_argument("action", choices=["create", "expand", "continue"], help="操作类型")
+    p_outline.add_argument("action", choices=["create", "expand", "continue", "pipeline"], help="操作类型")
     p_outline.add_argument("--idea", help="创意点子")
     p_outline.add_argument("--request", help="扩展要求")
-    p_outline.add_argument("--count", type=int, default=10, help="续写章节数")
+    p_outline.add_argument("--count", type=int, default=10, help="续写章节数 / pipeline目标章节数")
     p_outline.set_defaults(func=cmd_outline)
     
     # write 命令

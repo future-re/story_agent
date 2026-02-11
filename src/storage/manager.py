@@ -8,6 +8,8 @@ import json
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
+from utils.word_count import count_story_words
+
 
 class StorageManager:
     """存储管理器 - 管理小说内容的本地存储"""
@@ -81,6 +83,40 @@ class StorageManager:
             f.write(outline_content)
         
         return filepath
+
+    def save_story_blueprint(self, project_name: str, blueprint_data: Dict[str, Any]) -> str:
+        """保存结构化粗纲（JSON）。"""
+        project_dir = self.get_project_dir(project_name)
+        filepath = os.path.join(project_dir, "story_blueprint.json")
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(blueprint_data, f, ensure_ascii=False, indent=2, default=str)
+        return filepath
+
+    def load_story_blueprint(self, project_name: str) -> Optional[Dict[str, Any]]:
+        """加载结构化粗纲（JSON）。"""
+        project_dir = self.get_project_dir(project_name)
+        filepath = os.path.join(project_dir, "story_blueprint.json")
+        if not os.path.exists(filepath):
+            return None
+        with open(filepath, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def save_detailed_outline_json(self, project_name: str, outline_data: Dict[str, Any]) -> str:
+        """保存结构化细纲（JSON）。"""
+        project_dir = self.get_project_dir(project_name)
+        filepath = os.path.join(project_dir, "detailed_outline.json")
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(outline_data, f, ensure_ascii=False, indent=2, default=str)
+        return filepath
+
+    def load_detailed_outline_json(self, project_name: str) -> Optional[Dict[str, Any]]:
+        """加载结构化细纲（JSON）。"""
+        project_dir = self.get_project_dir(project_name)
+        filepath = os.path.join(project_dir, "detailed_outline.json")
+        if not os.path.exists(filepath):
+            return None
+        with open(filepath, "r", encoding="utf-8") as f:
+            return json.load(f)
     
     def save_character_profile(self, project_name: str, character_name: str,
                                profile: Dict[str, Any]) -> str:
@@ -197,7 +233,8 @@ class StorageManager:
         for chapter_file in chapters:
             chapter_path = os.path.join(project_dir, "chapters", chapter_file)
             with open(chapter_path, 'r', encoding='utf-8') as f:
-                total_words += len(f.read())
+                raw = f.read()
+                total_words += count_story_words(self._extract_saved_chapter_body(raw))
         
         return {
             "project_name": project_name,
@@ -206,3 +243,11 @@ class StorageManager:
             "total_words": total_words,
             "chapters": chapters
         }
+
+    @staticmethod
+    def _extract_saved_chapter_body(raw_text: str) -> str:
+        """去除 save_chapter 自动添加的章节头，避免统计偏大。"""
+        lines = raw_text.splitlines()
+        if len(lines) >= 3 and lines[1].strip("=") == "":
+            return "\n".join(lines[3:])
+        return raw_text

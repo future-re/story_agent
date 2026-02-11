@@ -42,12 +42,15 @@ class Config:
     moonshot_api_key: Optional[str] = None
     
     # 思考模型 (用于剧情分析)
-    thinking_model: str = "moonshot-v1-8k"
+    thinking_model: str = "glm-4-plus"
     enable_plot_thinking: bool = True
     thinking_mode: str = "auto"  # auto/fast/deep
     thinking_cache_size: int = 20
     thinking_previous_context_chars: int = 3000
     thinking_world_context_chars: int = 2500
+    thinking_quality_retry: int = 1
+    thinking_deep_min_storyboard_shots: int = 4
+    thinking_fast_min_storyboard_shots: int = 3
     
     # 存储
     output_dir: str = "./output"
@@ -74,6 +77,18 @@ class Config:
             thinking_world_context_chars=_env_int(
                 "STORY_THINKING_WORLD_CONTEXT_CHARS",
                 cls.thinking_world_context_chars,
+            ),
+            thinking_quality_retry=_env_int(
+                "STORY_THINKING_QUALITY_RETRY",
+                cls.thinking_quality_retry,
+            ),
+            thinking_deep_min_storyboard_shots=_env_int(
+                "STORY_THINKING_DEEP_MIN_SHOTS",
+                cls.thinking_deep_min_storyboard_shots,
+            ),
+            thinking_fast_min_storyboard_shots=_env_int(
+                "STORY_THINKING_FAST_MIN_SHOTS",
+                cls.thinking_fast_min_storyboard_shots,
             ),
             output_dir=os.getenv("STORY_OUTPUT_DIR", cls.output_dir),
             default_chapter_words=_env_int("STORY_DEFAULT_CHAPTER_WORDS", cls.default_chapter_words),

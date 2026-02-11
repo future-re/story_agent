@@ -34,10 +34,56 @@ class MockThinkingAI:
         "action_beats": [{"beat": 1, "actor": "主角", "action": "贴墙潜行", "reaction": "听到追兵"}],
         "dialogue_script": [],
         "purpose": "立刻承接前文"
+      },
+      {
+        "shot_number": 2,
+        "location": "岔路口",
+        "action_beats": [{"beat": 1, "actor": "主角", "action": "判断岔路", "reaction": "听见水滴声"}],
+        "dialogue_script": [{"speaker": "主角", "line": "左边有风，应该通向出口。", "tone": "低声"}],
+        "purpose": "推进路线决策"
+      },
+      {
+        "shot_number": 3,
+        "location": "石门前",
+        "action_beats": [{"beat": 1, "actor": "主角", "action": "扳动机关", "reaction": "石门松动"}],
+        "dialogue_script": [],
+        "purpose": "制造章节钩子"
       }
     ],
     "cliffhanger": {"type": "危机", "final_line": "火光映出陌生人影", "reader_hook": "那人是谁？"},
     "writing_guidance": {"tone": "紧张", "pacing": "快"}
+  }
+}"""
+
+
+class MockLowQualityDeepAI:
+    def __init__(self):
+        self.calls = 0
+
+    def stream_chat(self, *args, **kwargs):
+        self.calls += 1
+        yield """{
+  "plot_analysis": {
+    "pre_chapter_context": {
+      "previous_ending": "主角受伤",
+      "immediate_consequences": "先找地方疗伤",
+      "character_emotional_carryover": "疲惫"
+    }
+  },
+  "chapter_blueprint": {
+    "title_suggestion": "疗伤",
+    "theme": "恢复",
+    "opening_hook": "主角开始恢复",
+    "storyboard": [
+      {
+        "shot_number": 1,
+        "location": "山洞",
+        "action_beats": [{"beat": 1, "actor": "主角", "action": "打坐", "reaction": "稍有恢复"}],
+        "purpose": "恢复状态"
+      }
+    ],
+    "conflict_escalation": [],
+    "key_moments": []
   }
 }"""
 
@@ -103,3 +149,25 @@ def test_thinking_engine_cache_hit():
     assert any(isinstance(item, dict) for item in outputs_1)
     assert any(isinstance(item, dict) for item in outputs_2)
     assert any("使用缓存剧情规划" in item for item in outputs_2 if isinstance(item, str))
+
+
+def test_low_quality_deep_plan_not_cached():
+    ai = MockLowQualityDeepAI()
+    engine = PlotThinkingEngine(ai_client=ai, cache_size=4)
+    engine.quality_retry_count = 0
+
+    params = dict(
+        chapter_num=6,
+        outline_info={"volume": "卷二", "phase": "中段", "specific_goal": "暂避追兵并恢复"},
+        world_context="角色状态",
+        previous_content="上一章结尾",
+        is_append=False,
+        thinking_mode="deep",
+    )
+
+    outputs_1 = list(engine.analyze_chapter(**params))
+    outputs_2 = list(engine.analyze_chapter(**params))
+
+    assert ai.calls == 2
+    assert any("规划仍有缺口" in item for item in outputs_1 if isinstance(item, str))
+    assert not any("使用缓存剧情规划" in item for item in outputs_2 if isinstance(item, str))

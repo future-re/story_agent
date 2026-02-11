@@ -46,6 +46,14 @@ class StoryAgent:
     def continue_outline(self, plan_count: int = 10) -> str:
         """从已有章节续写大纲"""
         return self.outline_gen.from_chapters(self.project_name, plan_count)
+
+    def create_story_pipeline(self, idea: str, chapter_count: int = 10) -> Dict:
+        """按五阶段流程初始化故事基础（粗纲/细纲/世界/角色）。"""
+        return self.outline_gen.build_story_pipeline(
+            idea=idea,
+            project_name=self.project_name,
+            chapter_count=chapter_count,
+        )
     
     # ==================== 角色 ====================
     
