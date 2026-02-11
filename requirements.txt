@@ -15,6 +15,7 @@ langchain>=0.3.0
 langchain-core>=0.3.0
 langchain-community>=0.3.0
 langgraph>=0.2.0
+chainlit>=2.0.0
 
 # --- 工具调用 ---
 duckduckgo-search>=6.2.0

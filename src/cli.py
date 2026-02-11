@@ -5,6 +5,8 @@ Story Agent CLI - 命令行交互入口
 import argparse
 import sys
 import os
+import shutil
+import subprocess
 
 # 加载 .env
 try:
@@ -149,6 +151,27 @@ def cmd_import(args):
     # 提示用户可以生成后续大纲
     print(f"\n💡 现在可以运行: story-agent outline {args.project} continue")
     print(f"   来根据已有章节生成后续大纲")
+
+
+def cmd_web(args):
+    """启动 Chainlit Web 交互模式。"""
+    chainlit_bin = shutil.which("chainlit")
+    if chainlit_bin is None:
+        print("❌ 未检测到 chainlit 命令。请先安装：pip install chainlit")
+        return
+
+    app_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chainlit_app.py")
+    command = [chainlit_bin, "run", app_path]
+    if args.watch:
+        command.append("-w")
+    if args.host:
+        command.extend(["--host", args.host])
+    if args.port:
+        command.extend(["--port", str(args.port)])
+
+    print("🌐 启动 Web 交互模式中...")
+    print("   访问地址将由 Chainlit 输出。")
+    subprocess.run(command, check=False)
 
 
 def cmd_interactive(args):
@@ -756,6 +779,13 @@ def main():
     p_import.add_argument("--chapter", type=int, default=1, help="章节序号（单文件导入时）")
     p_import.add_argument("--title", help="章节标题（单文件导入时）")
     p_import.set_defaults(func=cmd_import)
+
+    # web 命令
+    p_web = subparsers.add_parser("web", help="启动 Chainlit Web 交互模式")
+    p_web.add_argument("--host", default="0.0.0.0", help="监听地址")
+    p_web.add_argument("--port", type=int, default=8000, help="监听端口")
+    p_web.add_argument("-w", "--watch", action="store_true", help="源码变更自动重载")
+    p_web.set_defaults(func=cmd_web)
     
     args = parser.parse_args()
     

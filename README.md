@@ -42,6 +42,25 @@ cp .env.example .env
 story-agent
 ```
 
+#### Web 交互模式（Chainlit + LangGraph）
+
+```bash
+# 安装交互增强依赖（如果尚未安装）
+pip install ".[interactive]"
+
+# 启动 Web 界面
+story-agent web --host 0.0.0.0 --port 8000
+```
+
+Web 模式核心命令：
+
+- `/new <项目名>`：创建/切换项目
+- `/outline <创意点子>`：生成并保存大纲
+- `/write`：执行写作准备（生成规划）
+- `/approve`：确认当前规划并写入章节
+- `/reject`：放弃当前规划
+- `/status`、`/export`：查看状态和导出
+
 #### 命令行模式
 
 ```bash
@@ -134,6 +153,7 @@ output/
 | 命令 | 说明 |
 |------|------|
 | `python src/cli.py` | 交互模式 |
+| `story-agent web` | Web 交互模式（Chainlit） |
 | `new <名称> [--idea]` | 创建项目 |
 | `outline <项目> create --idea` | 从点子生成大纲 |
 | `outline <项目> continue` | 从章节续写大纲 |
