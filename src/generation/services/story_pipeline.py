@@ -10,6 +10,7 @@ except ImportError:
     repair_json = None
 
 from storage import StorageManager
+from tools import StoryEditTools, StoryReadTools
 from ..prompts import (
     PROMPT_DETAILED_OUTLINE_FROM_BLUEPRINT,
     PROMPT_STRUCTURED_BLUEPRINT,
@@ -23,6 +24,8 @@ class StoryPipelineService:
     def __init__(self, ai_client: Any, storage: StorageManager):
         self.ai = ai_client
         self.storage = storage
+        self.read_tools = StoryReadTools(storage)
+        self.edit_tools = StoryEditTools(storage)
 
     @staticmethod
     def _extract_json_dict(response_text: str) -> Optional[Dict[str, Any]]:
@@ -397,7 +400,7 @@ class StoryPipelineService:
         }
 
     def _load_recent_chapter_samples(self, project_name: str, max_chapters: int = 3, max_chars_each: int = 1200) -> str:
-        chapters = self.storage.list_chapters(project_name)
+        chapters = self.read_tools.list_chapters(project_name)
         if not chapters:
             return ""
 
@@ -420,7 +423,7 @@ class StoryPipelineService:
         parsed = self._extract_json_dict(response if isinstance(response, str) else str(response))
         normalized = self._normalize_story_blueprint(parsed, idea=idea)
         if save_to:
-            self.storage.save_story_blueprint(save_to, normalized)
+            self.edit_tools.save_story_blueprint(save_to, normalized)
         return normalized
 
     def generate_detailed_outline(
@@ -438,8 +441,8 @@ class StoryPipelineService:
         normalized = self._normalize_detailed_outline(parsed, chapter_count=chapter_count)
 
         if save_to:
-            self.storage.save_detailed_outline_json(save_to, normalized)
-            self.storage.save_outline(save_to, normalized.get("outline_markdown", ""))
+            self.edit_tools.save_detailed_outline_json(save_to, normalized)
+            self.edit_tools.save_outline(save_to, normalized.get("outline_markdown", ""))
         return normalized
 
     def initialize_world_state(
@@ -460,7 +463,7 @@ class StoryPipelineService:
         normalized = self._normalize_world_state(parsed, blueprint=blueprint)
 
         if save:
-            self.storage.save_world_state(project_name, normalized)
+            self.edit_tools.save_world_state(project_name, normalized)
             for char in normalized.get("characters", []):
                 name = str(char.get("name", "")).strip()
                 if name:

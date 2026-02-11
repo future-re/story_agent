@@ -18,13 +18,9 @@ from config import config
 from generation import OutlineGenerator
 from interactive import LANGGRAPH_AVAILABLE, StoryWriteWorkflow
 from models import get_client
+from skills_runtime import DEFAULT_CHAT_SYSTEM_PROMPT, SkillRegistry, WritingSkillRouter
 from storage import StorageManager
-
-SYSTEM_PROMPT = """你是一位资深网络小说编辑和创作顾问。你的任务是：
-1. 帮助用户构思故事点子、人物设定、世界观
-2. 讨论剧情走向、冲突设计、爽点安排
-3. 提供专业的网文创作建议
-请用简洁专业的语言回答。"""
+from tools import StoryEditTools, StoryReadTools
 
 
 def _parse_command(text: str) -> Tuple[str, str]:
@@ -43,6 +39,37 @@ def _session_storage() -> StorageManager:
         storage = StorageManager(config.output_dir)
         cl.user_session.set("storage", storage)
     return storage
+
+
+def _session_read_tools() -> StoryReadTools:
+    tools = cl.user_session.get("read_tools")
+    if tools is None:
+        tools = StoryReadTools(_session_storage())
+        cl.user_session.set("read_tools", tools)
+    return tools
+
+
+def _session_edit_tools() -> StoryEditTools:
+    tools = cl.user_session.get("edit_tools")
+    if tools is None:
+        tools = StoryEditTools(_session_storage())
+        cl.user_session.set("edit_tools", tools)
+    return tools
+
+
+def _session_skill_router() -> WritingSkillRouter:
+    router = cl.user_session.get("skill_router")
+    if router is None:
+        router = WritingSkillRouter(
+            registry=SkillRegistry(config.skills_dir),
+            outline_skill_name=config.outline_skill_name,
+            continuation_skill_name=config.continuation_skill_name,
+            rewrite_skill_name=config.rewrite_skill_name,
+            fallback_skill_name=config.writing_skill_name,
+            enabled=config.enable_skill_writing,
+        )
+        cl.user_session.set("skill_router", router)
+    return router
 
 
 def _session_ai() -> Optional[Any]:
@@ -184,6 +211,9 @@ async def on_chat_start() -> None:
     cl.user_session.set("project_name", None)
     _clear_pending_write()
     _session_storage()
+    _session_read_tools()
+    _session_edit_tools()
+    skill_router = _session_skill_router()
 
     try:
         ai = get_client(config.model_name)
@@ -194,10 +224,13 @@ async def on_chat_start() -> None:
     cl.user_session.set("ai", ai)
 
     langgraph_text = "可用" if LANGGRAPH_AVAILABLE else "未安装（将自动降级为线性流程）"
+    active = skill_router.describe_active_skills()
+    skill_lines = ", ".join([f"{name}:{'on' if enabled else 'off'}" for name, enabled in active.items()])
     await cl.Message(
         content=(
             "Story Agent Web 已启动。\n"
             f"LangGraph: {langgraph_text}\n"
+            f"Skills: {skill_lines}\n"
             "先执行 `/new 项目名`，再用 `/outline 点子` 或 `/write`。输入 `/help` 查看命令。"
         )
     ).send()
@@ -220,25 +253,14 @@ async def on_message(message: cl.Message) -> None:
             await cl.Message(content=f"✅ 当前项目：{arg}").send()
             return
         if cmd == "/list":
-            storage = _session_storage()
-            projects = []
-            try:
-                import os
-
-                if os.path.exists(storage.base_dir):
-                    projects = [
-                        d
-                        for d in os.listdir(storage.base_dir)
-                        if os.path.isdir(os.path.join(storage.base_dir, d))
-                    ]
-            except Exception:
-                projects = []
+            read_tools = _session_read_tools()
+            projects = read_tools.list_projects()
             if not projects:
                 await cl.Message(content="暂无项目").send()
                 return
             lines = ["项目列表："]
             for name in sorted(projects):
-                info = storage.get_project_info(name)
+                info = read_tools.get_project_info(name)
                 lines.append(f"- {name} ({info['chapter_count']}章, {info['total_words']}字)")
             await cl.Message(content="\n".join(lines)).send()
             return
@@ -275,8 +297,8 @@ async def on_message(message: cl.Message) -> None:
             await _run_write_prepare(project_name)
             return
         if cmd == "/status":
-            storage = _session_storage()
-            info = storage.get_project_info(project_name)
+            read_tools = _session_read_tools()
+            info = read_tools.get_project_info(project_name)
             await cl.Message(
                 content=(
                     f"📚 项目: {project_name}\n"
@@ -286,9 +308,9 @@ async def on_message(message: cl.Message) -> None:
             ).send()
             return
         if cmd == "/export":
-            storage = _session_storage()
+            edit_tools = _session_edit_tools()
             try:
-                path = storage.export_full_novel(project_name)
+                path = edit_tools.export_full_novel(project_name)
             except FileNotFoundError:
                 await cl.Message(content="❌ 没有章节可导出").send()
                 return
@@ -305,11 +327,14 @@ async def on_message(message: cl.Message) -> None:
 
     history: List[Dict[str, Any]] = cl.user_session.get("history") or []
     history.append({"role": "user", "content": text})
+    skill_router = _session_skill_router()
+    runtime = skill_router.route("chat-consult", user_text=text)
+    system_prompt = runtime.build_system_prompt("编辑咨询", DEFAULT_CHAT_SYSTEM_PROMPT)
 
     reply = cl.Message(content="")
     await reply.send()
     response_text = ""
-    for chunk in ai.stream_chat(text, history=history[:-1], system_prompt=SYSTEM_PROMPT):
+    for chunk in ai.stream_chat(text, history=history[:-1], system_prompt=system_prompt):
         response_text += str(chunk)
         await reply.stream_token(str(chunk))
 

@@ -174,12 +174,43 @@ def cmd_web(args):
     subprocess.run(command, check=False)
 
 
+def cmd_skills(args):
+    """技能相关操作。"""
+    from config import config
+    from models import get_client
+    from skills_runtime import NovelSkillMiner
+
+    if args.action != "mine":
+        print(f"❌ 不支持的 skills action: {args.action}")
+        return
+
+    print("🧠 正在分析小说语料并提炼写作技巧...")
+    ai = get_client(config.model_name)
+    miner = NovelSkillMiner(ai_client=ai, skills_dir=args.skills_dir or config.skills_dir)
+    report = miner.mine(
+        source_dir=args.source,
+        max_novels=args.novels,
+        max_chapters=args.chapters,
+        chapter_chars=args.chapter_chars,
+    )
+    files = miner.write_skill_references(report)
+
+    print("✅ 分析完成")
+    print(f"   - 小说数: {report.get('novel_count')}")
+    print(f"   - 每本最多章节: {report.get('max_chapters_per_novel')}")
+    print("📁 已写入：")
+    for skill_name, path in files.items():
+        print(f"   - {skill_name}: {path}")
+
+
 def cmd_interactive(args):
     """交互模式 - 连续对话"""
     from prompt_toolkit import prompt
     from prompt_toolkit.history import InMemoryHistory
     from prompt_toolkit.completion import Completer, Completion
+    from config import config
     from models import get_client
+    from skills_runtime import DEFAULT_CHAT_SYSTEM_PROMPT, SkillRegistry, WritingSkillRouter
     from storage import StorageManager
     from generation import OutlineGenerator, ChapterGenerator
     
@@ -255,11 +286,14 @@ def cmd_interactive(args):
     history = []
     input_history = InMemoryHistory()
     
-    system_prompt = """你是一位资深网络小说编辑和创作顾问。你的任务是：
-1. 帮助用户构思故事点子、人物设定、世界观
-2. 讨论剧情走向、冲突设计、爽点安排
-3. 提供专业的网文创作建议
-请用简洁专业的语言回答。"""
+    skill_router = WritingSkillRouter(
+        registry=SkillRegistry(config.skills_dir),
+        outline_skill_name=config.outline_skill_name,
+        continuation_skill_name=config.continuation_skill_name,
+        rewrite_skill_name=config.rewrite_skill_name,
+        fallback_skill_name=config.writing_skill_name,
+        enabled=config.enable_skill_writing,
+    )
     
     while True:
         try:
@@ -698,6 +732,8 @@ def cmd_interactive(args):
             
             print("\n🤖: ", end="", flush=True)
             response_text = ""
+            runtime = skill_router.route("chat-consult", user_text=user_input)
+            system_prompt = runtime.build_system_prompt("编辑咨询", DEFAULT_CHAT_SYSTEM_PROMPT)
             for chunk in ai.stream_chat(user_input, history=history[:-1], system_prompt=system_prompt):
                 print(chunk, end="", flush=True)
                 response_text += chunk
@@ -786,6 +822,16 @@ def main():
     p_web.add_argument("--port", type=int, default=8000, help="监听端口")
     p_web.add_argument("-w", "--watch", action="store_true", help="源码变更自动重载")
     p_web.set_defaults(func=cmd_web)
+
+    # skills 命令
+    p_skills = subparsers.add_parser("skills", help="技能工具（语料学习/技巧提炼）")
+    p_skills.add_argument("action", choices=["mine"], help="操作类型")
+    p_skills.add_argument("--source", required=True, help="小说语料目录（10-20本小说）")
+    p_skills.add_argument("--novels", type=int, default=20, help="最多分析小说本数")
+    p_skills.add_argument("--chapters", type=int, default=100, help="每本最多读取章节数")
+    p_skills.add_argument("--chapter-chars", type=int, default=3000, help="每章最多读取字符数")
+    p_skills.add_argument("--skills-dir", default=None, help="技能目录（默认读取配置 STORY_SKILLS_DIR）")
+    p_skills.set_defaults(func=cmd_skills)
     
     args = parser.parse_args()
     

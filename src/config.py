@@ -54,6 +54,12 @@ class Config:
     
     # 存储
     output_dir: str = "./output"
+    skills_dir: str = "./skills"
+    writing_skill_name: str = "writing-skill"
+    outline_skill_name: str = "outline-skill"
+    continuation_skill_name: str = "continuation-skill"
+    rewrite_skill_name: str = "rewrite-skill"
+    enable_skill_writing: bool = True
     
     # 生成参数
     default_chapter_words: int = 3000
@@ -91,6 +97,12 @@ class Config:
                 cls.thinking_fast_min_storyboard_shots,
             ),
             output_dir=os.getenv("STORY_OUTPUT_DIR", cls.output_dir),
+            skills_dir=os.getenv("STORY_SKILLS_DIR", cls.skills_dir),
+            writing_skill_name=os.getenv("STORY_WRITING_SKILL_NAME", cls.writing_skill_name),
+            outline_skill_name=os.getenv("STORY_OUTLINE_SKILL_NAME", cls.outline_skill_name),
+            continuation_skill_name=os.getenv("STORY_CONTINUATION_SKILL_NAME", cls.continuation_skill_name),
+            rewrite_skill_name=os.getenv("STORY_REWRITE_SKILL_NAME", cls.rewrite_skill_name),
+            enable_skill_writing=_env_bool("STORY_ENABLE_SKILL_WRITING", cls.enable_skill_writing),
             default_chapter_words=_env_int("STORY_DEFAULT_CHAPTER_WORDS", cls.default_chapter_words),
             default_outline_chapters=_env_int("STORY_DEFAULT_OUTLINE_CHAPTERS", cls.default_outline_chapters),
         )

@@ -7,7 +7,6 @@
 """
 
 import json
-import os
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
 try:
@@ -17,8 +16,9 @@ except ImportError:
 
 from config import config
 from generation.services import ChapterPreparationService, ChapterWritingService, WorldStateUpdateService
+from skills_runtime import SkillRegistry, WritingSkillRouter
 from storage import StorageManager
-from tools import resolve_thinking_mode
+from tools import StoryEditTools, StoryReadTools, resolve_thinking_mode
 from utils.word_count import count_chinese_words
 
 
@@ -53,32 +53,24 @@ class ChapterGenerator:
                 # 无法初始化推理模型时自动降级，避免影响基础生成功能。
                 self.thinking_engine = None
 
-        self.world_data = self.storage.load_world_state(project_name) or {}
+        self.read_tools = StoryReadTools(self.storage)
+        self.edit_tools = StoryEditTools(self.storage)
+        self.skill_router = WritingSkillRouter(
+            registry=SkillRegistry(config.skills_dir),
+            outline_skill_name=config.outline_skill_name,
+            continuation_skill_name=config.continuation_skill_name,
+            rewrite_skill_name=config.rewrite_skill_name,
+            fallback_skill_name=config.writing_skill_name,
+            enabled=config.enable_skill_writing,
+        )
+        self.world_data = self.read_tools.load_world_state(project_name) or {}
         self._preparation_service = ChapterPreparationService()
         self._writing_service = ChapterWritingService()
         self._world_state_service = WorldStateUpdateService()
 
     def _get_latest_chapter(self) -> Tuple[int, str, str, int]:
         """获取最新章节信息：(章节号, 标题, 内容, 字数)。"""
-        chapters = self.storage.list_chapters(self.project_name)
-        if not chapters:
-            return (0, "", "", 0)
-
-        latest = chapters[-1]
-        try:
-            ch_num = int(latest.split("_")[0])
-            title = latest.split("_", 1)[1].replace(".txt", "")
-        except (IndexError, ValueError):
-            ch_num = len(chapters)
-            title = "未命名"
-
-        ch_path = os.path.join(self.storage.get_project_dir(self.project_name), "chapters", latest)
-        try:
-            with open(ch_path, "r", encoding="utf-8") as f:
-                content = f.read()
-            return (ch_num, title, content, count_chinese_words(content))
-        except OSError:
-            return (ch_num, title, "", 0)
+        return self.read_tools.get_latest_chapter(self.project_name)
 
     @staticmethod
     def _to_text_list(values: Any, limit: int = 0) -> List[str]:
@@ -362,25 +354,11 @@ class ChapterGenerator:
 
     def _load_outline(self) -> str:
         """加载大纲。"""
-        try:
-            outline_path = os.path.join(self.storage.get_project_dir(self.project_name), "大纲.txt")
-            if os.path.exists(outline_path):
-                with open(outline_path, "r", encoding="utf-8") as f:
-                    return f.read()[: self.OUTLINE_MAX_CHARS]
-        except OSError:
-            pass
-        return ""
+        return self.read_tools.load_outline_text(self.project_name, max_chars=self.OUTLINE_MAX_CHARS)
 
     def _load_style_ref(self) -> str:
         """加载风格参考文本。"""
-        try:
-            ref_path = os.path.join(self.storage.base_dir, "reference.txt")
-            if os.path.exists(ref_path):
-                with open(ref_path, "r", encoding="utf-8") as f:
-                    return f.read()[:2000]
-        except OSError:
-            pass
-        return ""
+        return self.read_tools.load_style_reference(max_chars=2000)
 
     @staticmethod
     def _build_style_prompt(style_ref: str) -> str:
@@ -849,6 +827,12 @@ class ChapterGenerator:
         yield self._format_character_action_summary(plan) + "\n"
         yield plan
 
+    def get_generation_system_prompt(self, mode: str = "new") -> str:
+        task = "chapter-append" if mode == "append" else "chapter-generate"
+        task_type = "续写" if mode == "append" else "新写"
+        runtime = self.skill_router.route(task)
+        return runtime.build_system_prompt(task_type, self.GENERATION_SYSTEM_PROMPT)
+
     def _build_generation_prompt(
         self,
         mode: str,
@@ -873,7 +857,7 @@ class ChapterGenerator:
             )
 
         if mode == "append":
-            return f"""请继续续写以下章节内容，直到本章达到3000字以上。
+            base_prompt = f"""请继续续写以下章节内容，直到本章达到3000字以上。
 
 {world_context}
 {style_prompt}
@@ -894,6 +878,8 @@ class ChapterGenerator:
 
 请直接续写（不要重复已有内容）：
 """
+            runtime = self.skill_router.route("chapter-append")
+            return runtime.wrap_prompt("续写-章节正文", base_prompt)
 
         if strict_continuity:
             previous_context_block = f"""【前一章结尾 - 本章必须紧接此处续写】
@@ -920,7 +906,7 @@ class ChapterGenerator:
 5. 请先给本章起一个标题"""
             planning_line = "（请严格按照上述剧情规划来构思，确保剧情推进符合大纲节奏）"
 
-        return f"""请创作小说第{chapter_num}章的完整内容（3000-4000字）。
+        base_prompt = f"""请创作小说第{chapter_num}章的完整内容（3000-4000字）。
 
 {world_context}
 {style_prompt}
@@ -943,8 +929,10 @@ class ChapterGenerator:
 请按格式输出：
 ## 第{chapter_num}章：[标题]
 
-[正文内容]
+        [正文内容]
 """
+        runtime = self.skill_router.route("chapter-generate")
+        return runtime.wrap_prompt("新写-章节正文", base_prompt)
 
     def _build_generation_result(
         self, mode: str, chapter_num: int, chapter_title: str, previous_content: str, generated_content: str

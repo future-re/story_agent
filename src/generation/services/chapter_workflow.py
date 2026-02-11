@@ -134,7 +134,7 @@ class ChapterWritingService:
         )
 
         full_content = ""
-        for chunk in gen.ai.stream_chat(prompt, system_prompt=gen.GENERATION_SYSTEM_PROMPT):
+        for chunk in gen.ai.stream_chat(prompt, system_prompt=gen.get_generation_system_prompt(mode)):
             yield chunk
             full_content += chunk
 
@@ -185,7 +185,7 @@ class ChapterWritingService:
         )
 
         full_content = ""
-        for chunk in gen.ai.stream_chat(prompt, system_prompt=gen.GENERATION_SYSTEM_PROMPT):
+        for chunk in gen.ai.stream_chat(prompt, system_prompt=gen.get_generation_system_prompt(mode)):
             yield chunk
             full_content += chunk
 
@@ -567,7 +567,7 @@ class WorldStateUpdateService:
                     )
                     gen.world_data["world_state_notes"] = gen.world_data["world_state_notes"][-30:]
 
-            gen.storage.save_world_state(gen.project_name, gen.world_data)
+            gen.edit_tools.save_world_state(gen.project_name, gen.world_data)
             yield "\n✅ 状态已更新"
             for line in gen._build_world_update_summary_lines(updates):
                 yield line

@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, TypedDict
 
 from generation import ChapterGenerator
 from storage import StorageManager
+from tools import StoryEditTools
 
 try:
     from langgraph.graph import END, START, StateGraph
@@ -49,6 +50,7 @@ class StoryWriteWorkflow:
     ):
         self.project_name = project_name
         self.storage = storage or StorageManager()
+        self.edit_tools = StoryEditTools(self.storage)
         self.chapter_gen = chapter_generator or ChapterGenerator(
             project_name=project_name,
             ai_client=ai_client,
@@ -182,7 +184,7 @@ class StoryWriteWorkflow:
         if not result:
             return {"error": "缺少生成结果，无法保存"}
 
-        saved_path = self.storage.save_chapter(
+        saved_path = self.edit_tools.save_chapter(
             self.project_name,
             int(result["chapter"]),
             str(result["title"]),

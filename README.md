@@ -9,6 +9,9 @@ AI 驱动的小说创作助手，帮助你从点子到完整小说。
 - 🎭 **角色系统** - 创建有记忆和人格的角色 Agent
 - ✍️ **章节创作** - AI 辅助生成章节正文
 - 🧠 **双速思考** - `auto/fast/deep` 思考模式，支持缓存复用
+- 🧩 **工具+技能架构** - 核心仅保留 `read/edit` 工具，写作策略由 `skills/writing-skill` 驱动
+- 🧭 **技能路由** - 自动在 `outline-skill / continuation-skill / rewrite-skill` 之间切换
+- 📚 **语料学习** - 可分析 10-20 本小说前 100 章并回写 skill 技巧库
 - 💾 **本地存储** - 自动保存为 txt 文件
 - 🔄 **多模式支持** - 从零开始 / 从章节反推 / 从大纲扩展
 
@@ -60,6 +63,25 @@ Web 模式核心命令：
 - `/approve`：确认当前规划并写入章节
 - `/reject`：放弃当前规划
 - `/status`、`/export`：查看状态和导出
+
+#### 技能学习命令（从小说语料提炼技巧）
+
+```bash
+# 从小说语料目录学习（每本最多前100章）
+story-agent skills mine \
+  --source /path/to/novels \
+  --novels 20 \
+  --chapters 100
+```
+
+语料目录支持两种形式：
+- 每本小说一个子目录，目录下按章节放 `txt/md` 文件
+- 每本小说一个 `txt/md` 文件（按“第X章 / Chapter X”自动切章）
+
+分析结果会写入：
+- `skills/outline-skill/references/learned_techniques.md`
+- `skills/continuation-skill/references/learned_techniques.md`
+- `skills/rewrite-skill/references/learned_techniques.md`
 
 #### 命令行模式
 
@@ -121,7 +143,8 @@ src/
 ├── simulation/   # 仿真（世界状态、事件、记忆）
 ├── generation/   # 生成（大纲、章节、Prompt）
 │   └── services/ # 生成流程服务层（pipeline/prepare/write/update）
-├── tools/        # 可复用流程工具（思考模式、缓存键、上下文裁剪）
+├── tools/        # read/edit/thinking 工具层（核心能力）
+├── skills_runtime/ # 技能运行时（路由、注入、语料学习）
 ├── models/       # AI 模型适配
 ├── storage/      # 本地存储
 ├── schema/       # 数据模型
@@ -161,6 +184,7 @@ output/
 | `outline <项目> pipeline --idea` | 执行五阶段初始化 |
 | `write <项目> <章节号> <标题>` | 写章节 |
 | `import <项目> --dir/--file` | 导入已有章节 |
+| `skills mine --source <目录>` | 分析小说语料并生成技能技巧库 |
 | `status <项目>` | 查看状态 |
 | `export <项目>` | 导出小说 |
 
@@ -178,6 +202,21 @@ GLM_MAX_TOKENS=8192
 
 # 思考模式：auto / fast / deep
 STORY_THINKING_MODE=auto
+
+# ===== 技能驱动写作 =====
+# 是否启用写作技能注入（建议开启）
+STORY_ENABLE_SKILL_WRITING=true
+
+# 技能目录（默认 ./skills）
+STORY_SKILLS_DIR=./skills
+
+# 通用回退技能名（默认 writing-skill）
+STORY_WRITING_SKILL_NAME=writing-skill
+
+# 三类专项技能名（默认如下）
+STORY_OUTLINE_SKILL_NAME=outline-skill
+STORY_CONTINUATION_SKILL_NAME=continuation-skill
+STORY_REWRITE_SKILL_NAME=rewrite-skill
 
 # 思考缓存大小（LRU）
 STORY_THINKING_CACHE_SIZE=20
